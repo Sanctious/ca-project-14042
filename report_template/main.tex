@@ -1,0 +1,709 @@
+% ---------------------------------------------------------------
+% نسخه ی ساده ی گزارش با LaTeX + XePersian
+% کامپایل با:  xelatex main.tex
+% ---------------------------------------------------------------
+\documentclass[12pt,a4paper]{article}
+
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{fontspec}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+
+% ---- فونت ها -------------------------------------------------
+% اگر فونت ها روی سیستم نصب باشند، فقط نام کافی است.
+% در غیر این صورت از پوشه ی fonts/ خوانده می شوند.
+\usepackage{xepersian}
+\settextfont[Path=fonts/, Extension=.ttf]{Vazirmatn[wght]}
+\setlatintextfont[Path=fonts/, Extension=.ttf]{Recursive_VF_1.085}
+\setmonofont[Path=fonts/, Extension=.ttf,
+             BoldFont=RecursiveMono-Bold,
+             ItalicFont=RecursiveMono-Italic]{RecursiveMono-Regular}
+
+% ---- تنظیمات کد ----------------------------------------------
+\lstset{
+  language=C++,
+  basicstyle=\ttfamily\footnotesize,
+  keywordstyle=\color{blue!60!black},
+  commentstyle=\color{gray},
+  stringstyle=\color{green!40!black},
+  numbers=none,
+  frame=single,
+  breaklines=true,
+  showstringspaces=false,
+  columns=fullflexible,
+}
+
+% محیط کوتاه برای قطعه کد لاتین داخل متن فارسی
+\newenvironment{code}{\begin{latin}\begin{lstlisting}}{\end{lstlisting}\end{latin}}
+
+\title{پیاده‌سازی و تحلیل سیاست‌های جایگزینی حافظه‌ی نهان در \lr{ChampSim}}
+\author{امیر محمد محقق \and امیررضا دولتی \and سپهر کلانکی \and سینا فعالیت}
+\date{تابستان ۱۴۰۴}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+% =================================================================
+\section{مقدمه}
+
+\lr{12.5M warmup 50M simulation}
+
+% =================================================================
+\section{توضیح \lr{Replacement Policy} ها}
+
+برای تمام \lr{Replacement Policy} ها یک دور روش آنها را به طور کامل توضیح می دهیم که گزارش کامل باشد.
+نکات ناقص رو نیز باید اضافه بکنیم.
+
+\subsection{یک نکته ی مشترک بین چند \lr{policy}: نوع دسترسی \lr{access\_type::WRITE}}
+
+در چند تا از سیاست های، یک شرط روی \lr{access\_type} می بینیم که دسترسی های نوع \lr{WRITE} را جدا می کند. این نوع دسترسی ها مربوط به \lr{writeback} می شود. نکته این است که این نوشتن نشانه ی استفاده ی پردازنده از داده در همان لحظه نیست، بلکه صرفا نتیجه ی \lr{replacement} در سطح بالاتر است. اگر \lr{writeback} ها را مثل دسترسی عادی حساب کنیم و سیاست ها را روی آنها نیز اجرا کنیم، دو مشکل پیش می آید: اول اینکه بلوک هایی که فقط نوشته شده اند بی دلیل تازه به حساب می آیند و در کش ماندگار می شوند و دوم اینکه در سیاست های پویا مثل \lr{DRRIP} آمار تصمیم گیری منحرف می شود چون این دسترسی ها رفتار واقعی برنامه را نشان نمی دهند. به همین دلیل در سیاست های ما یا اثر \lr{writeback} نادیده گرفته می شود یا بلوک با یک مقدار امن و غیر مخرب پر می شود.
+
+\subsection{توابع مهم برای هر سیاست}
+
+\begin{itemize}
+  \item تابع \lr{find\_victim}: وقتی \lr{miss} رخ داد، شماره ی \lr{way} قربانی را برمی گرداند.
+  \item تابع \lr{replacement\_cache\_fill}: بعد از اینکه بلوک جدید داخل \lr{way} قرار گرفت صدا زده می شود (منطق \lr{fill}).
+  \item تابع \lr{update\_replacement\_state}: در هر دسترسی صدا زده می شود و پارامتر \lr{hit} مشخص می کند دسترسی \lr{hit} بوده یا نه.
+\end{itemize}
+
+نکته ی نهایی این نیز که بیشتر تنظیمات کلی و \lr{global} به ازای هر \lr{CPU Core} است، مثلا برای شمارنده ها و ...
+
+% -----------------------------------------------------------------
+\subsection{\lr{LRU}}
+
+\textbf{منطق انتخاب بلوک قربانی:}
+بین تمام بلوک های موجود در یک \lr{set}، بلوکی حذف می شود که بیشترین زمان بدون استفاده مانده است، به همین دلیل بلوک های که دسترسی بیشتری در طول زمان دارند کمتر حذف می شوند.
+
+\textbf{نحوه بروزرسانی اطلاعات کمکی:}
+هر بلوک یک مقدار زمان دسترسی نگه می دارد که نشان می دهد نسبت به بقیه بلوک ها داخل همان \lr{set} کی مورد دسترسی واقع شده است. مقدار ۰ یعنی اینکه نسبت به بقیه قدیمی تر استفاده شده است، و هرچه مقدار آن بزرگتر باشد یعنی اینکه نسبت به بقیه جدید تر مورد دسترسی واقع شده است، و جدیدترین دسترسی این \lr{set} است. هر دسترسی با توجه به \lr{Miss} یا \lr{Hit} شدن مقادیر را تغییر می دهیم که ترتیب دسترسی حفظ شود.
+
+\textbf{نکات کد:}
+
+\subsubsection{قطعه ۱ --- ساختار داده ی کمکی و سازنده}
+
+\begin{code}
+class lru : public champsim::modules::replacement
+{
+  long NUM_WAY;
+  std::vector<uint64_t> last_used_cycles;
+  uint64_t cycle = 0;
+  ...
+};
+
+lru::lru(CACHE* cache) : lru(cache, cache->NUM_SET, cache->NUM_WAY) {}
+
+lru::lru(CACHE* cache, long sets, long ways)
+    : replacement(cache), NUM_WAY(ways),
+      last_used_cycles(static_cast<std::size_t>(sets * ways), 0) {}
+\end{code}
+
+اطلاعات اضافه در یک بردار یک-بعدی به طول \lr{sets * ways} نگه داری می شود و آدرس هر بلوک با فرمول \lr{set * NUM\_WAY + way} به دست می آید.
+
+\subsubsection{قطعه ۲ --- انتخاب بلوک قربانی}
+
+\begin{code}
+long lru::find_victim(uint32_t triggering_cpu, uint64_t instr_id, long set, ...)
+{
+  auto begin = std::next(std::begin(last_used_cycles), set * NUM_WAY);
+  auto end = std::next(begin, NUM_WAY);
+
+  // Find the way whose last use cycle is most distant
+  auto victim = std::min_element(begin, end);
+  assert(begin <= victim);
+  assert(victim < end);
+  return std::distance(begin, victim);
+}
+\end{code}
+
+ابتدا با \lr{begin} و \lr{end} بازه ی مربوط به همان \lr{set} جدا می شود و بعد \lr{min\_element} کوچک ترین برچسب زمان را پیدا می کند. چون برچسب بزرگ تر یعنی دسترسی جدیدتر، کوچک ترین مقدار دقیقا یعنی بلوکی که از همه دیرتر استفاده شده است.
+
+اگر چند بلوک مقدار برابر داشته باشند (مثلا چند \lr{way} هنوز دست نخورده و برابر ۰ باشند)، \lr{min\_element} اولین آنها را برمی گرداند، پس ترتیب پر شدن \lr{set} از \lr{way} کوچک به بزرگ است.
+
+\subsubsection{قطعه ۳ --- درج و به روزرسانی}
+
+\begin{code}
+void lru::replacement_cache_fill(uint32_t triggering_cpu, long set, long way, ...)
+{
+  // Mark the way as being used on the current cycle
+  last_used_cycles.at((std::size_t)(set * NUM_WAY + way)) = cycle++;
+}
+
+void lru::update_replacement_state(..., uint8_t hit)
+{
+  // Mark the way as being used on the current cycle
+  if (hit && access_type{type} != access_type::WRITE) // Skip this for writeback hits
+    last_used_cycles.at((std::size_t)(set * NUM_WAY + way)) = cycle++;
+}
+\end{code}
+
+در زمان درج بلوک جدید در موقعیت \lr{MRU} قرار می گیرد و کم خطر ترین بلوک \lr{set} است.
+
+% -----------------------------------------------------------------
+\subsection{\lr{FIFO}}
+
+\textbf{منطق انتخاب بلوک قربانی:}
+بین تمام بلوک های موجود در \lr{set}، بلوکی که زودتر از همه وارد شده است باید خارج شود (منطق \lr{First In First Out}). اینکه بلوک اخیرا دسترسی قرار گرفته یا نه تاثیری در تصمیم گیری ندارد. عملا منطق صف دارد.
+
+\textbf{نحوه بروزرسانی اطلاعات کمکی:}
+یک ترتیب ورود برای بلوک هایی که به \lr{set} وارد می شوند ذخیره می کند. موقع \lr{hit} چیزی را تغییر نمی دهد ولی موقع \lr{miss} ترتیب عوض می شود (البته بدون آپدیت کردن مقدار بقیه چون زمان اضافه شدن اهمیت دارد).
+
+\textbf{نکات کد:}
+
+\subsubsection{قطعه ۱ --- ساختار داده}
+
+\begin{code}
+class fifo : public champsim::modules::replacement
+{
+  long NUM_WAY;
+  std::vector<uint64_t> insertion_cycles;
+  uint64_t cycle = 0;
+  ...
+};
+\end{code}
+
+ساختار داده دقیقا مثل \lr{LRU} است و تنها چیزی که فرق می کند مفهوم عدد کمکی است، که اینجا مفهوم زمان وارد شدن بلوک به \lr{set} را می دهد. \lr{cycle} در اینجا یک شمارنده کلی است که برای زمان اضافه شدن استفاده می شود و بیانگر شمارشگر زمان است که در هنگام هر \lr{fill} افزایش پیدا می کند.
+
+\subsubsection{قطعه ۲ --- انتخاب قربانی و ثبت زمان ورود}
+
+\begin{code}
+long fifo::find_victim(uint32_t triggering_cpu, uint64_t instr_id, long set, ...)
+{
+    auto begin = std::next(std::begin(insertion_cycles), set * NUM_WAY);
+    auto end = std::next(begin, NUM_WAY);
+
+    // Evict the oldest inserted block
+    auto victim = std::min_element(begin, end);
+    return std::distance(begin, victim);
+}
+
+void fifo::replacement_cache_fill(uint32_t triggering_cpu, long set, long way, ...)
+{
+    // Record insertion time
+    insertion_cycles.at((std::size_t)(set * NUM_WAY + way)) = cycle++;
+}
+\end{code}
+
+بدون اینکه صف واقعی داشته باشیم، با یک برچسب زمان ورود همان رفتار صف را می سازیم، کمترین مقدار یعنی قدیمی ترین ورود که همان بلوک از صف خارج می شود.
+
+\subsubsection{قطعه ۳ --- تابع خالی به روزرسانی}
+
+\begin{code}
+void fifo::update_replacement_state(..., uint8_t hit)
+{
+}
+\end{code}
+
+تابع \lr{update} این \lr{policy} خالی است چون طبق توضیحات در \lr{FIFO} لازم نیست کاری انجام بدهیم.
+
+% -----------------------------------------------------------------
+\subsection{\lr{MRU}}
+
+\textbf{منطق انتخاب بلوک قربانی:}
+کاملا مخالف \lr{LRU} عمل می کند ولی منطق مشابهی دارد به این صورت که بلوکی در \lr{set} خارج می شود که نسبت به بقیه اخیرا دسترسی داشته است.
+
+\textbf{نحوه بروزرسانی اطلاعات کمکی:}
+مشابه \lr{LRU} و نکته ای اضافه ای ندارد.
+
+\textbf{نکات کد:}
+
+\subsubsection{قطعه ۱ --- تنها تفاوت با \lr{LRU}}
+
+\begin{code}
+long mru::find_victim(uint32_t triggering_cpu, uint64_t instr_id, long set, ...)
+{
+  auto begin = std::next(std::begin(last_used_cycles), set * NUM_WAY);
+  auto end = std::next(begin, NUM_WAY);
+
+  auto victim = std::max_element(begin, end); //MRU!!!
+  return std::distance(begin, victim);
+}
+\end{code}
+
+کل تفاوت پیاده سازی با \lr{LRU} استفاده از \lr{max\_element} به جای \lr{min\_element} است، به همین دلیل بلوکی که اخیرا به \lr{set} اضافه شده است قربانی است. بقیه ی کد ها با \lr{LRU} کاملا یکسان هستند.
+
+% -----------------------------------------------------------------
+\subsection{\lr{Random}}
+
+\textbf{منطق انتخاب بلوک قربانی:}
+در هر \lr{set} به صورت رندوم یک بلوک را انتخاب می کنیم.
+
+\textbf{نحوه بروزرسانی اطلاعات کمکی:}
+اطلاعات اضافه ای برای ذخیره لازم نداریم.
+
+\textbf{نکات کد:}
+
+\subsubsection{قطعه ۱ --- مولد شبه تصادفی و بازه ی انتخاب}
+
+\begin{code}
+struct random : public champsim::modules::replacement {
+  std::mt19937_64 rng{};
+  std::uniform_int_distribution<long> dist;
+  ...
+};
+
+random::random(CACHE* cache) : random(cache, cache->NUM_WAY) {}
+
+random::random(CACHE* cache, long ways) : replacement(cache), dist(0, ways - 1) {}
+\end{code}
+
+رندوم روی بازه ی \lr{[0, ways-1]} یک عدد انتخاب می کنیم که بیانگر آن بلوکی است که باید حذف شود.
+
+\subsubsection{قطعه ۲ --- انتخاب قربانی و نبود توابع دیگر}
+
+\begin{code}
+long random::find_victim(uint32_t triggering_cpu, uint64_t instr_id, long set, ...)
+{
+  return dist(rng);
+}
+\end{code}
+
+در سیاست \lr{random} کل خطی که منطق این سیاست را پیاده سازی می کند همین است و توابع دیگر نیاز به \lr{override} کردن ندارند چون این سیاست منطق هندل کردن حالت ندارد.
+
+% -----------------------------------------------------------------
+\subsection{\lr{SRRIP}}
+
+به ازای هر بلوک در \lr{set} یک عدد به نام \lr{RRPV} (\lr{Re-Reference Prediction Value}) ذخیره می شود که معمولا ۲ بیت است که ۴ مقدار می تواند به خود بگیرد. در صورتی که ۰ باشد یعنی اینکه احتمالا به زودی استفاده می شود و در صورتی که ۳ باشد احتمالا خیلی در آینده ی دور استفاده می شود و در آینده ی نزدیک احتمالا استفاده نمی شود.
+
+\textbf{منطق انتخاب بلوک قربانی:}
+در روش \lr{SRRIP} (\lr{Static Re-Reference Interval Prediction}) کل منطق بر این است که در یک \lr{set} بلوک هایی که خیلی استفاده می شوند پایدار می شوند و در صورتی که استفاده ی یک بلوک کم شود احتمالا بلوک قربانی خواهد بود. برای پیدا کردن بلوک قربانی هم بلوکی که \lr{RRPV} برابر ۳ (بیشترین مقدار) را دارد خارج می شود. و در صورتی که هیچ بلوکی مقدار ۳ نداشت، مقدار \lr{RRPV} تمام بلوک ها را زیاد می کنیم تا یکی به ۳ برسد، و این فرایند تا شرط برقرار شود ادامه پیدا می کند.
+
+\textbf{نحوه بروزرسانی اطلاعات کمکی:}
+در صورتی که بلوک جدید اضافه شود، یک بلوک با \lr{RRPV} تقریبا میانه مثل \lr{MAX\_RRPV-1} اضافه می کند. در هنگام \lr{hit} مقدار \lr{RRPV} آن بلوک به ۰ ریست می شود. مقدار بروزرسانی هنگام خارج شدن یک بلوک هم داریم که بالا توضیح دادیم.
+
+\textbf{نکات کد:}
+
+\subsubsection{قطعه ۱ --- \lr{helper} هر \lr{set} و مقداردهی اولیه}
+
+\begin{code}
+struct srrip_set_helper {
+  using rrpv_type = int;
+  static constexpr rrpv_type maxRRPV = 3;
+
+  std::vector<rrpv_type> rrpv_values;
+  rrpv_type& get_rrpv(long way);
+
+  long victim();
+  void update(long way, bool hit);
+};
+
+srrip_set_helper::srrip_set_helper(long ways)
+    : rrpv_values(static_cast<std::size_t>(ways), maxRRPV) {}
+
+srrip::srrip(CACHE* cache, long sets_, long ways_) : replacement(cache)
+{
+  std::generate_n(std::back_inserter(sets), sets_,
+                  [ways = ways_] { return srrip_set_helper{ways}; });
+}
+\end{code}
+
+برای داده های کمکی یک شی \lr{srrip\_set\_helper} تعریف می کنیم که داده های مورد نیاز را به صورت گروهی نگه دارد.
+
+مقدار اولیه ی همه ی \lr{way} ها \lr{maxRRPV} است، یعنی کش خالی طوری رفتار می کند که انگار همه ی بلوک ها در مرز خروج هستند. با این حرکت \lr{way} های خالی بدون هیچ بررسی اضافه ای اول از همه انتخاب می شوند.
+
+در اینجا ما \lr{maxRRPV} را مساوی ۳ قرار دادیم که بیانگر همان ۲ بیت برای این داده است.
+
+\subsubsection{قطعه ۲ --- انتخاب قربانی و افزایش گروهی}
+
+\begin{code}
+long srrip_set_helper::victim()
+{
+  // Find the maximum RRPV
+  auto victim = std::max_element(std::begin(rrpv_values), std::end(rrpv_values));
+
+  // If the maximum element has RRPV less than the maximum, increment everything
+  std::transform(std::cbegin(rrpv_values), std::cend(rrpv_values), std::begin(rrpv_values),
+                 [diff = maxRRPV - *victim](auto x) { return x + diff; });
+
+  // Return the way index
+  return std::distance(std::begin(rrpv_values), victim);
+}
+\end{code}
+
+همان توصیف حلقه شکلی که در توضیح سیاست داشتیم اینجا به صورت یک عبارت جبری ساده به صورت \lr{diff = maxRRPV - max} است که به همه اضافه می شود. عملا همان کار حلقه را می کند و این دو روش هم ارزند ولی این بار محاسباتی کمتری دارد.
+
+اگر از قبل بلوکی با مقدار بیشینه وجود داشته باشد، \lr{diff} برابر صفر می شود و \lr{transform} عملا هیچ تغییری نمی دهد. یعنی همان حالت عادی که مستقیما قربانی پیدا می شود.
+
+نکته ی دیگر این است که این افزایش فقط در مسیر \lr{miss} اتفاق می افتد.
+
+\subsubsection{قطعه ۳ --- به روزرسانی مشترک برای \lr{hit} و \lr{fill}}
+
+\begin{code}
+void srrip_set_helper::update(long way, bool hit) { get_rrpv(way) = hit ? 0 : (maxRRPV - 1); }
+
+void srrip::update_replacement_state(..., uint8_t hit)
+{
+  sets.at(static_cast<std::size_t>(set)).update(way, hit);
+}
+\end{code}
+
+کد \lr{replacement\_cache\_fill} بازنویسی نشده است و هر دو حالت \lr{hit} و \lr{fill} از همین یک تابع استفاده می کنند که برای اینکه بین \lr{hit} و \lr{fill} تشخیص دهیم یک \lr{bool hit} داریم که بین این دو انتخاب کند.
+
+در صورتی که \lr{hit} بشود مقدار به ۰ ریست می شود و در صورتی که \lr{fill} باشد مقدار جدید برابر \lr{maxRRPV-1} خواهد بود.
+
+% -----------------------------------------------------------------
+\subsection{\lr{BIP}}
+
+\textbf{منطق انتخاب بلوک قربانی:}
+روش \lr{BIP} (\lr{Bimodal Insertion Policy}) عملا روی روش \lr{LRU} سوار شده است که منطق خارج کردن بلوک از \lr{set} آن دقیقا مشابه \lr{LRU} است. صرفا نحوه ی هندل کردن ترتیب بلوک ها بر اساس دسترسی اخیر آنها کمی متفاوت است.
+
+\textbf{نحوه بروزرسانی اطلاعات کمکی:}
+در روش \lr{LRU} در هنگامی که بلوک جدید اضافه می شود، نسبت به بقیه در ترتیب دسترسی بالاتر بود. ولی در این روش هنگامی که بلوک جدید اضافه می شود با یک احتمال مشخص زیادی در ترتیب دسترسی پایینترین خواهد بود (\lr{Least Recently Used}) که یعنی در خطر خارج شدن است (بر خلاف روش عادی که بلوکی که جدید اضافه می شد کم خطر ترین برای خارج شدن بود) و با یک احتمال متمم مشخص دیگری در ترتیب دسترسی نسبت به بقیه بالاترین خواهد بود (مثل حالت عادی روش \lr{LRU}).
+
+\textbf{نکات کد:}
+
+\subsubsection{قطعه ۱ --- مولد تصادفی و پارامتر $\varepsilon$}
+
+\begin{code}
+class bip : public champsim::modules::replacement
+{
+    long NUM_WAY;
+    std::vector<uint64_t> last_used_cycles;
+    uint64_t cycle = 0;
+    std::mt19937 rng;
+    std::uniform_int_distribution<int> dist;
+    ...
+};
+
+bip::bip(CACHE* cache, long sets, long ways)
+    : replacement(cache),
+      NUM_WAY(ways),
+      last_used_cycles((std::size_t)(sets * ways), 0),
+      rng(0),
+      dist(0, 31)        // 1/32 probability
+{
+}
+\end{code}
+
+طبق توزیع \lr{dist(0, 31)} و شرطی که در قطعه ی سوم می آید (\lr{== 0}) یعنی احتمال درج در موقعیت \lr{MRU} دقیقا ۱/۳۲ و احتمال درج در موقعیت \lr{LRU} برابر ۳۱/۳۲ است. این مقدار به صورت رسمی $\varepsilon$ نام دارد و انتخاب آن دلخواه نیست و باید هوشمندانه باشد، ولی مقدار معمولی آن همین است. باید آنقدر کوچک باشد که برای جست و جوی خطی حافظه باعث \lr{cache pollution} نشود (داده های الکی و اضافه پر نکند) و آنقدر بزرگ باشد که اگر \lr{working set} برنامه عوض شد، \lr{cache} بتواند محتوای جدید را کم کم بپذیرد.
+
+برای \lr{seed} برای رندوم هم \lr{rng(0)} صفر را می دهیم. بقیه ی ساختار داده دقیقا همان \lr{LRU} است.
+
+\subsubsection{قطعه ۲ --- انتخاب قربانی (کاملا مثل \lr{LRU})}
+
+\begin{code}
+long bip::find_victim(uint32_t, uint64_t, long set, ...)
+{
+    auto begin = std::next(last_used_cycles.begin(), set * NUM_WAY);
+    auto end = std::next(begin, NUM_WAY);
+
+    auto victim = std::min_element(begin, end);
+    return std::distance(begin, victim);
+}
+\end{code}
+
+کاملا مشابه \lr{LRU} برای قربانی عمل می کنیم و منطق پیشرفته تری ندارد.
+
+\subsubsection{قطعه ۳ --- درج دو حالته}
+
+\begin{code}
+void bip::replacement_cache_fill(uint32_t, long set, long way, ...)
+{
+    auto idx = (std::size_t)(set * NUM_WAY + way);
+
+    // 1/32 insert at MRU
+    if (dist(rng) == 0)
+    {
+        last_used_cycles[idx] = cycle++;
+    }
+    else
+    {
+        // Insert as LRU
+        last_used_cycles[idx] = 0;
+    }
+}
+
+void bip::update_replacement_state(..., uint8_t hit)
+{
+    if (hit && type != access_type::WRITE)
+    {
+        last_used_cycles[(std::size_t)(set * NUM_WAY + way)] = cycle++;
+    }
+}
+\end{code}
+
+فقط منطق \lr{fill} طبق توضیحی که دادیم فرق می کرد و بقیه کاملا مشابهند.
+
+% -----------------------------------------------------------------
+\subsection{\lr{DRRIP}}
+
+\textbf{منطق انتخاب بلوک قربانی:}
+در روش \lr{DRRIP} (\lr{Dynamic RRIP}) منطق خارج کردن بلوک دقیقا مشابه روش \lr{SRRIP} است و تفاوتی ندارد.
+
+\textbf{نحوه بروزرسانی اطلاعات کمکی:}
+این روش هم چون یک روش تکمیلی روی \lr{SRRIP} است تقریبا مشابه عمل می کند به جز قراردادی که در هنگام اضافه کردن بلوک به \lr{set} دارد. به این صورت عمل می کند که دو تا \lr{sub-policy} دارد که بین این دوتا به صورت پویا عوض می کند. \lr{sub-policy} اول به این صورت است که برای بلوک جدیدی که اضافه می شود مثل \lr{SRRIP} برای مقدار \lr{RRPV} آن \lr{MAX\_RRPV-1} را قرار دهیم. و \lr{sub-policy} دیگر این است که مثل \lr{BIP}، با احتمال خیلی زیاد (ممکن است پیاده سازی این مورد به صورت احتمالی نباشد، مثلا در پیاده سازی ما اینطور نیست) مقدار \lr{RRPV} آن را \lr{MAX\_RRPV} قرار دهیم (مرز خروجی)، و با احتمال خیلی کمتر \lr{MAX\_RRPV-1} را قرار دهیم. در این روش اینکه کدام یک از این \lr{sub-policy} ها انتخاب می شود با استفاده از روش \lr{set-dueling} انجام می شود. به این صورت که ما ۳ نوع دسته داریم: \lr{brrip\_leader} و \lr{srrip\_leader} و \lr{follower}. برای دسته های \lr{srrip\_leader} و \lr{brrip\_leader} به صورت ثابت به ترتیب از \lr{sub-policy} های \lr{SRRIP} و \lr{BRRIP} استفاده می کنیم ولی برای دسته آخر که \lr{follower} است با توجه به یک شمارنده \lr{PSEL} انجام می شود.
+
+هنگام \lr{hit} هم فارغ از اینکه \lr{sub-policy} کدام باشد مقدار \lr{RRPV} به ۰ تنظیم می شود.
+
+\textbf{نکات کد:}
+
+\subsubsection{قطعه ۱ --- ثابت ها و شمارنده ی \lr{PSEL}}
+
+\begin{code}
+struct drrip : public champsim::modules::replacement {
+  static constexpr unsigned maxRRPV = 3;
+  static constexpr unsigned BRRIP_MAX = 32;
+  static constexpr unsigned PSEL_WIDTH = 10;
+
+  enum class set_type { follower, brrip_leader, srrip_leader };
+
+  unsigned brrip_counter;
+
+  std::vector<unsigned> rrpv;
+  std::vector<champsim::msl::dscounter<long, PSEL_WIDTH>> PSEL;
+};
+
+drrip::drrip(CACHE* cache)
+    : replacement(cache), NUM_SET(cache->NUM_SET), NUM_WAY(cache->NUM_WAY),
+      rrpv(static_cast<std::size_t>(NUM_SET * NUM_WAY)),
+      PSEL(NUM_CPUS, champsim::msl::dscounter<long, PSEL_WIDTH>(
+                         champsim::msl::get_sample_rate(NUM_SET)))
+{
+}
+\end{code}
+
+یک شمارنده ی \lr{PSEL} با طول ۱۰ بیت به ازای هر هسته داریم. ۳ دسته برای \lr{set} ها طبق توضیحی که دادیم داریم. و بقیه ی المان های \lr{SRRIP} و المان های مشابه \lr{BIP} را نیز مشاهده می کنیم.
+
+\subsubsection{قطعه ۲ --- دو \lr{sub-policy} درج}
+
+\begin{code}
+void drrip::update_brrip(long set, long way)
+{
+  get_rrpv(set, way) = maxRRPV;
+
+  brrip_counter++;
+  if (brrip_counter == BRRIP_MAX) {
+    brrip_counter = 0;
+    get_rrpv(set, way) = maxRRPV - 1;
+  }
+}
+
+void drrip::update_srrip(long set, long way) { get_rrpv(set, way) = maxRRPV - 1; }
+\end{code}
+
+در حالت \lr{BRRIP} بلوک جدید در ۳۱ حالت از هر ۳۲ حالت با مقدار \lr{maxRRPV} اضافه می شود (اینجا یک تفاوت ریز با \lr{BIP} دارد و آن این است که در \lr{BIP} این موضوع رندوم بود ولی اینجا به صورت چرخشی و سیکلی است و رندوم نیست، تاثیر عملکردی آن شاید ناچیز باشد و تقریبا یکسان باشند ولی از لحاظ سخت افزاری خیلی ساده تر از رندوم است)، یعنی در مرز خروج قرار می گیرد و اگر تا اولین جست وجوی قربانی استفاده نشود بیرون می رود. فقط یک بار در هر ۳۲ درج، مقدار \lr{maxRRPV - 1} داده می شود تا \lr{cache} بتواند به تدریج محتوای جدید را نگه دارد.
+
+تابع \lr{update\_srrip} دقیقا همان درج \lr{SRRIP} است و هیچ تفاوتی با آن ندارد.
+
+\subsubsection{قطعه ۳ --- انتخاب \lr{sub-policy} در زمان درج}
+
+\begin{code}
+void drrip::replacement_cache_fill(uint32_t triggering_cpu, long set, long way, ...)
+{
+  // do not update replacement state for writebacks
+  if (access_type{type} == access_type::WRITE) {
+    get_rrpv(set, way) = maxRRPV - 1;
+    return;
+  }
+  if (PSEL[triggering_cpu].decide(set)) {
+    update_brrip(set, way);
+  } else {
+    update_srrip(set, way);
+  }
+  // cache miss, update bad
+  PSEL[triggering_cpu].update_bad(set);
+}
+\end{code}
+
+تابع \lr{decide(set)} برای \lr{set} های \lr{leader} همیشه سیاست فیکس شده ی خودشان را برمی گرداند و برای \lr{set} های \lr{follower} بر اساس مقدار فعلی \lr{PSEL} تصمیم می گیرد.
+
+تابع \lr{update\_bad(set)} در هر \lr{fill} صدا زده می شود و چون \lr{fill} فقط بعد از \lr{miss} اتفاق می افتد، عملا هر \lr{miss} در یک \lr{set} رهبر، \lr{PSEL} را به ضرر سیاست همان رهبر تغییر می دهد. در نتیجه بعد از مدتی \lr{PSEL} به سمت سیاستی می رود که در \lr{set} های نمونه \lr{miss} کمتری داده است. این همان بخش پویای این روش است. اینکه خود تابع \lr{update\_bad} چطوری پیاده سازی شده است در فایل های داخلی \lr{ChampSim} است و خیلی جزیی می شود.
+
+\subsubsection{قطعه ۴ --- \lr{hit} و انتخاب قربانی}
+
+\begin{code}
+void drrip::update_replacement_state(..., uint8_t hit)
+{
+  if (hit) {
+    if (access_type{type} == access_type::WRITE) {
+      get_rrpv(set, way) = maxRRPV - 1;
+      return;
+    }
+    get_rrpv(set, way) = 0; // DRRIP always promotes a cache line to the MRU position
+  }
+}
+
+long drrip::find_victim(uint32_t triggering_cpu, uint64_t instr_id, long set, ...)
+{
+  auto begin = std::next(std::begin(rrpv), set * NUM_WAY);
+  auto end = std::next(begin, NUM_WAY);
+
+  auto victim = std::max_element(begin, end);
+  if (auto rrpv_update = maxRRPV - *victim; rrpv_update != 0)
+    for (auto it = begin; it != end; ++it)
+      *it += rrpv_update;
+
+  return std::distance(begin, victim);
+}
+\end{code}
+
+تابع \lr{find\_victim} از نظر منطقی دقیقا همان \lr{SRRIP} است و فقط به جای \lr{std::transform} از یک حلقه استفاده کرده است.
+
+در زمان برخورد، بدون توجه به اینکه کدام \lr{sub-policy} فعال است، مقدار \lr{RRPV} به ۰ می رسد.
+
+% -----------------------------------------------------------------
+\subsection{\lr{SHiP}}
+
+\textbf{منطق انتخاب بلوک قربانی:}
+در روش \lr{SHiP} (\lr{Signature-based Hit Predictor})، کاملا مشابه روش \lr{SRRIP} مقادیر \lr{RRPV} به ازای هر بلوک داریم که دقیقا به همان روش \lr{SRRIP} بلوک هدف را خارج می کنیم.
+
+\textbf{نحوه بروزرسانی اطلاعات کمکی:}
+در این \lr{policy} ما روی مقدار اولیه \lr{RRPV} که به ازای هر بلوک نسبت می دهیم خلاقیت به خرج می دهیم و سعی می کنیم مقدار هوشمندانه ای برای آن تعیین کنیم. به این صورت که در کنار \lr{RRPV} یک تگ به اسم \lr{signature} هم به هر بلوک هنگام اضافه شدن به \lr{set} به آن می دهیم که بر اساس ناحیه ی حافظه ای است که در آن قرار داشته است یا آدرس حافظه مربوط به آن است (\lr{PC}) (کلا قرارداد مخصوص به خود دارد، مثلا در کد ما همان \lr{PC} است). یک جدول به اسم \lr{SHCT} (\lr{Signature History Counter Table}) نگه می داریم که به ازای هر \lr{signature} یک شمارنده دارد که در هر بار دسترسی به بلوک با ان \lr{signature} خاص شمارنده مربوط به \lr{signature} در جدول کم می شود. عملا مقدار به ازای هر \lr{signature} در این جدول بیان می کند که این پترن خاص از حافظه چقدر امکان مجدد بازخواست و دسترسی دارند. هنگام اضافه کردن بلوک به \lr{set} از این جدول \lr{lookup} انجام می دهیم و مقدار مربوط به \lr{signature} این بلوک را می خوانیم، بر اساس این مقدار \lr{RRPV} را مقداردهی می کنیم. در صورتی که این مقدار کم باشد و یعنی احتمال بازخواست این \lr{signature} زیاد باشد مقدار \lr{RRPV} آن را یک چیز کم مثل ۰ یا ۱ می دهیم (البته اینکه در حالت خوب یک مقدار \lr{RRPV} به آن داده شود در کد نیست و در اولین پیاده سازی های این ایده هم ظاهرا نبوده و در مقالات و ورژن های بعدی که بهبود یافته است ظاهر می شود). و اگر مقدار جدول زیاد باشد و یعنی این \lr{signature} احتمالا زیاد بازخواست نمی شود مقدار \lr{RRPV} بالایی مثل \lr{MAX\_RRPV} به آن نسبت می دهیم.
+
+در هنگام \lr{hit} مقدار \lr{RRPV} بلوک به ۰ ریست می شود و ورودی داخل جدول \lr{SHCT} که مربوط به \lr{signature} این بلوک است یکی کم می شود.
+
+در هنگامی که بلوک بدون اینکه یکبار هم \lr{hit} شده باشد در جدول مقدار مربوط به \lr{signature} آن یکی زیاد می شود.
+
+نکته ی بسیار مهم این است که این جدول اگر برای تمام \lr{set} های موجود ذخیره شود سخت افزار خیلی بزرگی می خواهد، پس به جای اینکار ما این را برای تعداد محدودی \lr{set} انجام می دهیم و به بقیه \lr{set} ها تعمیم می دهیم. به این \lr{sampler} می گوییم که چیزی شبیه شبکه عصبی که با یک سری \lr{set} ها \lr{train} می شود و روی بقیه تست می شود. به این شکل سخت افزار کمتری مصرف می شود. در جاهای مختلف کد این موضوع تکرار شده ولی چون از توضیحی که دادیم خارج نیست، فرض می کنیم کلا \lr{sampler} را ندید می گیریم و کلی توضیح می دهیم، پس داخل کد و توضیحات بیشتر جاها منظورمان خود \lr{sampler} است که در یادگیری استفاده می شود ولی برای ساده سازی به خود جدول اشاره کردیم.
+
+\textbf{نکات کد:}
+
+\subsubsection{قطعه ۱ --- ساختار \lr{sampler} و جدول \lr{SHCT}}
+
+\begin{code}
+struct ship : public champsim::modules::replacement {
+  static constexpr int maxRRPV = 3;
+  static constexpr std::size_t SHCT_SIZE = 16384;
+  static constexpr unsigned SHCT_PRIME = 16381;
+  static constexpr unsigned SHCT_MAX = 7;
+
+  class SAMPLER_class
+  {
+  public:
+    bool valid = false;
+    bool used = false;
+    champsim::address address{};
+    champsim::address ip{};
+    uint64_t last_used = 0;
+  };
+
+  std::vector<SAMPLER_class> sampler;
+  std::vector<int> rrpv_values;
+  champsim::msl::categorizer<long> set_categorizer;
+  champsim::data::bits sampler_tag_bits;
+
+  std::vector<std::array<
+      champsim::msl::fwcounter<champsim::msl::lg2(SHCT_MAX + 1)>, SHCT_SIZE>> SHCT;
+};
+\end{code}
+
+ساختار داده \lr{SHCT} یک جدول با ۱۶۳۸۴ خانه است که هر خانه ی آن یک شمارنده ۳ بیتی است (چون \lr{SHCT\_MAX = 7} است).
+
+هر خانه ی \lr{sampler} یک بیت \lr{used} دارد که می گوید آیا آن بلوک بعد از درج حداقل یک بار استفاده شد یا نه.
+
+\subsubsection{قطعه ۲ --- آموزش جدول از روی \lr{sampler}}
+
+\begin{code}
+void ship::update_replacement_state(..., uint8_t hit)
+{
+  // update sampler
+  if (set_categorizer.get_sample_category(set) == 0) {
+    auto s_idx = set / champsim::msl::get_sample_rate(NUM_SET);
+    auto s_set_begin = std::next(std::begin(sampler), s_idx * NUM_WAY + ...);
+    auto s_set_end = std::next(s_set_begin, NUM_WAY);
+
+    // check hit
+    auto match = std::find_if(s_set_begin, s_set_end,
+        [addr = full_addr, shamt = sampler_tag_bits](auto x) {
+          return x.valid && x.address.slice_upper(shamt) == addr.slice_upper(shamt);
+        });
+    if (match != s_set_end) {
+      auto SHCT_idx = match->ip.slice_lower<32_b>().to<std::size_t>() % SHCT_PRIME;
+      SHCT[triggering_cpu][SHCT_idx] -= 1;
+      match->used = true;
+    } else {
+      match = std::min_element(s_set_begin, s_set_end,
+          [](auto x, auto y) { return x.last_used < y.last_used; });
+
+      if (!match->used) {
+        auto SHCT_idx = match->ip.slice_lower<32_b>().to<std::size_t>() % SHCT_PRIME;
+        SHCT[triggering_cpu][SHCT_idx] += 1;
+      }
+
+      match->valid = true;
+      match->address = full_addr;
+      match->ip = ip;
+      match->used = false;
+    }
+
+    // update LRU state
+    match->last_used = access_count++;
+  }
+
+  if (hit)
+    get_rrpv(set, way) = 0;
+}
+\end{code}
+
+در صورتی که \lr{hit} داشته باشیم از شمارنده مربوط به آن \lr{signature} یکی کم می شود و اگر بدون اینکه از بلوک اضافه شده استفاده ی مجدد شود و \lr{evict} شود شمارنده را یکی زیاد می کنیم.
+
+بخش \lr{signature} همان ۳۲ بیت پایین \lr{PC} است که با \lr{\% SHCT\_PRIME} روی جدول مپ می شود.
+
+بخش \lr{sampler} برای خودش یک سیاست \lr{LRU} مستقل دارد که با \lr{last\_used} و \lr{access\_count} پیاده شده و هیچ ربطی به \lr{RRPV} های کش اصلی ندارد. یعنی \lr{sampler} یک کش مجازی کوچک است که فقط برای آموزش نگه داشته می شود.
+
+در صورت \lr{hit} در \lr{cache} مقدار \lr{RRPV} را به ۰ ریست می کند.
+
+\subsubsection{قطعه ۳ --- استفاده از پیش بینی در زمان درج}
+
+\begin{code}
+void ship::replacement_cache_fill(uint32_t triggering_cpu, long set, long way, ...)
+{
+  // handle writeback access
+  if (access_type{type} == access_type::WRITE) {
+    get_rrpv(set, way) = maxRRPV - 1;
+    return;
+  }
+
+  // SHIP prediction
+  auto SHCT_idx = ip.slice_lower<32_b>().to<std::size_t>() % SHCT_PRIME;
+
+  get_rrpv(set, way) = maxRRPV - 1;
+  if (SHCT[triggering_cpu][SHCT_idx].is_max())
+    get_rrpv(set, way) = maxRRPV;
+}
+\end{code}
+
+همان بخش پویا که بر اساس مقدار جدول تصمیم می گیرد که مقدار اولیه \lr{RRPV} چه باشد. حالت پیشفرض مثل \lr{SRRIP} مقدار \lr{maxRRPV - 1} است و حالت خیلی بد مقدار \lr{maxRRPV} را به خود می گیرد.
+
+شرط \lr{is\_max} همان بررسی حالت خیلی بد است که در صورتی که شمارنده پر شده باشد (یعنی مقدار ۷ را به خود گرفته باشد) فعال می شود.
+
+\subsubsection{قطعه ۴ --- انتخاب قربانی}
+
+\begin{code}
+long ship::find_victim(uint32_t triggering_cpu, uint64_t instr_id, long set, ...)
+{
+  auto begin = std::next(std::begin(rrpv_values), set * NUM_WAY);
+  auto end = std::next(begin, NUM_WAY);
+
+  auto victim = std::max_element(begin, end);
+  if (auto rrpv_update = maxRRPV - *victim; rrpv_update != 0)
+    for (auto it = begin; it != end; ++it)
+      *it += rrpv_update;
+
+  return std::distance(begin, victim);
+}
+\end{code}
+
+این تابع عینا همان \lr{find\_victim} سیاست های \lr{SRRIP} و \lr{DRRIP} است.
+
+% =================================================================
+\section{توضیح \lr{Trace} ها}
+
+در رابطه با \lr{trace} ها انتخاب شده: \lr{trace} اول \lr{403.gcc} بود و برای آن انتخابش کردیم که همجواری زمانی بالایی داشت. علت هم آن است که مربوط به کامپایلر \lr{gcc} است کامپایلر بار ها به ساختار های داده یکسان (مثل جدول نماد ها و ...) دسترسی میخواهد بنابراین بلوک های کشی که به تازگی به از آنها استفاده شده، احتمالا دوباره از آنها استفاده خواهد شد و همانطور هم که در نمودار ها مشخص است و مورد انتظار ماست، سیاست \lr{LRU} عملکرد خیلی خوبی روی آن داشته است.
+
+ردپای دوم \lr{429.mcf} بود و علت انتخاب این بود که همجواری مکانی بالایی داشت. علت این اتفاق هم این است که این ردپا مربوط به حل مسایل بهینه سازی شبکه است و حجم خیلی زیادی داده را در حافظه پردازش میکند. این دسترسی ها معمولا به آدرس های مجاور هستند و برای همین همجواری مکانی در آن مهم است. یک نکته دیگر هم این است که به خاطر دسترسی های زیاد به حافظه، تاثیر اندازه کش در آن به خوبی محسوس است که در نمودار ها هم قابل مشاهده است.
+
+ردپای سوم \lr{470.lbm} بود و علت انتخاب این بود که رفتار جریانی را درون خود دارد. این برنامه مربوط به شبیه سازی دینامیک سیالات است و داده ها را عمدتا به صورت ترتیبی و یک بار مصرف پردازش می کند. بنابراین پس از دسترسی به یک بلوک حافظه، احتمال استفاده مجدد از آن بسیار کم است. بنابراین این ردپا نمونه ی خوبی از رفتار جریانی محسوب می شود و همانطور که در نمودار ها واضح است \lr{hit rate} برای برخی از سیاست ها بسیار پایین است که مطابق انتظار ماست.
+
+ردپای آخر هم \lr{471.omnetpp} بود و برای این انتخاب شد که بین سیاست های جایگزینی تفاوت قابل قبولی قایل میشد. چرا که این ردپا مربوط به شبیه سازی شبکه های کامپیوتری است. الگوی دسترسی آن به نسبت پیچیده است و مجموعه داده های فعال آن به گونه ای است که انتخاب بلوک برای جایگزینی می تواند تاثیر قابل توجهی بر نرخ برخورد و عملکرد سیستم داشته باشد. این مورد هم دقیقا روی نمودار ها قابل مشاهده است و بین سیاست ها تفاوت وجود دارد.
+
+نکته دیگر درباره شبیه سازی ها این است که تمام ۹۶ شبیه سازی، با ۱۲۵۰۰۰۰۰ دستور گرم سازی و ۵۰۰۰۰۰۰۰ دستور شبیه سازی انجام شد. این اتفاق خوبی بود که تمام شبیه سازی ها با تعداد دستور یکسان اجرا شدند زیرا باعث عدالت شد و تعداد دستورات هم مقدار زیادی بود تا به خوبی سیاست های مختلف روی ردپا های مختلف مورد آزمایش قرار بگیرند و تفاوت میان ردپا ها قابل حس باشد ولی طبیعتا به خاطر اینکه ردپا های مختلف داشیم، تفاوت زمانی بین شبیه سازی ها دیده میشود. مثلا شبیه سازی ها با این تعداد دستور روی ردپای \lr{429.mcf} حدود +۲۰ دقیقه زمان میبرد در حالی که بقیه شبیه سازی ها معمولا زیر ۱۰ دقیقه بودند و علت آن هم طبیعتا نوع متفاوت ردپاهاست و همانطور که گفته شده بود ردپای \lr{429.mcf} خیلی به حافظه دسترسی دارد (تعداد دسترسی ها همانطور که در \lr{llc\_results} مشاهده میشود برای این ردپا بیشتر از بقیه است) بنابراین نسبت به بقیه ردپا ها خیلی بیشتر در \lr{llc} خطا داریم و از آنجا که خطا در \lr{llc} پنالتی خیلی زیادی دارد، باعث طولانی تر شدن شبیه سازی در این ردپا در مقایسه با بقیه شده است. میانگین دسترسی به \lr{llc} در بقیه نزدیک به هم هستند و فقط \lr{471.omnetpp} مقدار کمی از بقیه کمتر به \lr{llc} دسترسی دارد و همین مورد هم سبب این شده که این ردپا هم کمی نسبت به بقیه زمان کمتری بگیرد.
+
+% =================================================================
+\section{نحوه ی اجرا و خروجی گرفتن پروژه}
+
+توضیح \lr{script} ها و ...
+
+\end{document}
