@@ -9,7 +9,7 @@
 // Latin comes from one variable font. Its monospace cut is the exception: it lives
 // on Recursive's MONO axis, which Typst cannot address, so it is pre-instanced by
 // tools/make-fonts.py.
-// Persian is Morabba, Regular throughout; Heavy is on hand but never requested.
+// Persian is Morabba Regular, and that is the only cut shipped in fonts/.
 // Recursive sits ahead of it in every stack so latin comes from Recursive at the
 // same requested weight, and Vazirmatn stands behind it as a coverage fallback.
 // Swapping the persian face means changing these three lines and nothing else.
@@ -17,12 +17,13 @@
 // range, so with `fa-family: "Estedad"` the weights below can go to 700 and 600.
 #let fa-family = "Morabba"
 
-// Morabba is installed as Regular and Heavy only, and Typst resolves 400-600 to
-// Regular and 700-900 to Heavy. Headings therefore stay at Regular and lean on size
-// and colour instead; emphasis asks for 600, which leaves persian at Regular while
-// Recursive still varies to a real semibold for latin.
+// Morabba Regular is the only persian cut available, so any weight above 400 would
+// fall back to a synthesised face for persian while Recursive (a variable font) really
+// did get heavier — bolding the latin runs alone and reading as random emphasis
+// mid-sentence. Both weights below are therefore 400, and emphasis is carried by size
+// and colour instead.
 #let display-weight = 400
-#let strong-weight = 600
+#let strong-weight = 400
 
 #let font = (
   fa: ("Recursive Sans Linear", fa-family, "Vazirmatn"),
@@ -63,7 +64,7 @@
             text(fill: rule-color)[|]
             h(0.4em)
           }
-          text(fill: primary, weight: strong-weight, current.body)
+          text(fill: primary, current.body)
         },
       )
       v(-0.4em)
@@ -107,29 +108,39 @@
 }
 
 // ── cover pattern ────────────────────────────────────────────────────────────
-// A band of hairline diagonals, clipped to its own box. Every fourth stroke is
-// tinted with the accent so the field reads as a rhythm rather than a texture.
-#let hatch-band(height: 3.4cm, gap: 0.34cm, angle: 62deg, flip: false) = block(
+// A field of cache lines: a grid of blocks that starts solid against the edge bar
+// and dissolves into outlines as it moves inward. The fill of each block is a
+// hash of its position, so the field is deterministic but reads as unordered.
+#let cover-field(height: 4.4cm, flip: false, cell: 0.46cm, gap: 0.16cm) = block(
   width: 100%, height: height, clip: true,
   {
-    let len = height / calc.sin(angle) + 2cm
-    let count = int(21cm / gap) + int(len / gap) + 2
-    for i in range(count) {
-      let tint = calc.rem(i, 4) == 0
-      place(
-        // the flipped band rises from the bottom edge instead of falling from the top
-        (if flip { bottom } else { top }) + left,
-        dx: i * gap - len,
-        line(
-          angle: if flip { -angle } else { angle },
-          length: len,
-          stroke: (if tint { 0.7pt } else { 0.5pt })
-            + (if tint { accent } else { rule-color }).transparentize(if tint { 55% } else { 25% }),
-        ),
-      )
+    let step = cell + gap
+    let cols = int(22cm / step) + 1
+    let rows = int(height / step) + 1
+    for r in range(rows) {
+      // depth counts away from the edge the field hangs from, and drives the fade
+      let depth = if flip { r } else { r }
+      let solid-cut = calc.max(0, 58 - depth * 17)
+      let ghost-cut = calc.max(0, 88 - depth * 21)
+      for c in range(cols) {
+        let k = calc.rem(calc.div-euclid((r + 3) * (c + 11) * 2654435761, 512), 100)
+        place(
+          (if flip { bottom } else { top }) + left,
+          dx: c * step,
+          dy: (if flip { -1 } else { 1 }) * r * step,
+          rect(
+            width: cell, height: cell, radius: 1.5pt,
+            fill: if k < solid-cut { accent } else if k < ghost-cut { accent.transparentize(74%) } else { none },
+            stroke: if k < ghost-cut { none } else { 0.7pt + rule-color },
+          ),
+        )
+      }
     }
   },
 )
+
+// the bar the field hangs from: one heavy accent edge at the top and the bottom
+#let cover-bar = rect(width: 100%, height: 0.42cm, fill: accent)
 
 // ── title page ───────────────────────────────────────────────────────────────
 #let title-page(info) = {
@@ -138,8 +149,10 @@
     footer: none,
     margin: (top: 0cm, bottom: 0cm, inside: 2.2cm, outside: 1.8cm),
     background: block(width: 100%, height: 100%, {
-      place(top + left, hatch-band())
-      place(bottom + left, hatch-band(flip: true))
+      place(top + left, cover-bar)
+      place(top + left, dy: 0.42cm, cover-field())
+      place(bottom + left, cover-bar)
+      place(bottom + left, dy: -0.42cm, cover-field(height: 3.2cm, flip: true))
     }),
   )
   set align(center)
@@ -154,7 +167,7 @@
     text(size: 10.5pt, fill: muted, info.faculty)
   }
   v(1.2cm)
-  line(length: 42%, stroke: 1.5pt + accent)
+  line(length: 42%, stroke: 2.2pt + accent)
   v(0.5cm)
   text(font: font.display, weight: display-weight, size: 25pt, fill: primary, info.title)
   if info.subtitle != none {
@@ -162,7 +175,7 @@
     text(size: 13pt, fill: secondary, info.subtitle)
   }
   v(0.5cm)
-  line(length: 42%, stroke: 1.5pt + accent)
+  line(length: 42%, stroke: 2.2pt + accent)
   v(1.1cm)
 
   // the authors sit together in one card so the four of them read as a group
@@ -250,19 +263,23 @@
   set enum(numbering: (..n) => fa(n.pos().last()) + ".")
   set list(marker: text(fill: accent)[•])
   set table(stroke: 0.5pt + rule-color, fill: (_, y) => if y == 0 { surface })
-  show table.cell.where(y: 0): set text(weight: strong-weight, fill: primary)
+  show table.cell.where(y: 0): set text(fill: primary)
+  // narrow cells stretch persian words apart when justified, so cells stay ragged
+  show table.cell: set par(justify: false)
   set line(stroke: 0.5pt + rule-color)
 
   show link: it => text(fill: secondary, it)
   show ref: it => text(fill: secondary, it)
   show cite: it => text(fill: secondary, it)
-  show strong: it => text(fill: primary, weight: strong-weight, it.body)
+  // persian resolves any weight below 700 to Regular, so a bold span would only
+  // thicken its latin runs and read as random emphasis; strong is colour alone
+  show strong: it => text(fill: primary, it.body)
 
   show heading: set block(above: 0.95em, below: 0.55em)
   show heading.where(level: 1): chapter-page
   show heading.where(level: 2): set text(font: font.display, weight: display-weight, size: 14.5pt, fill: primary)
-  show heading.where(level: 3): set text(size: 12pt, weight: strong-weight, fill: secondary)
-  show heading.where(level: 4): set text(size: 11pt, weight: strong-weight, fill: muted)
+  show heading.where(level: 3): set text(size: 12pt, fill: secondary)
+  show heading.where(level: 4): set text(size: 11pt, fill: muted)
 
   show figure.where(kind: table): set figure(supplement: [جدول], numbering: n => chapter-num(n))
   show figure.where(kind: image): set figure(supplement: [شکل], numbering: n => chapter-num(n))
@@ -271,6 +288,11 @@
 
   show raw: set text(font: font.mono, size: 9pt)
   show raw.where(block: true): set text(dir: ltr, lang: "en")
+  // Inline code is latin even mid-sentence, so it takes Recursive Mono like block raw.
+  // But it also inherits the paragraph's rtl base, which reorders the neutrals inside
+  // identifiers (`cpu0->LLC TOTAL`, `[0, ways-1]`, `maxRRPV - 1`). Boxing each span as
+  // its own ltr run isolates it from the surrounding bidi without touching the text.
+  show raw.where(block: false): it => box(text(dir: ltr, lang: "en", it))
   show: codly-init
   codly(
     languages: codly-languages,
@@ -325,7 +347,9 @@
     }
     show outline.entry.where(level: 1): it => {
       v(0.7em, weak: true)
-      text(weight: strong-weight, fill: primary, it)
+      // persian has no semibold cut, so a weight bump would only bolden the latin
+      // runs of an entry; the level reads from the colour and the leading instead
+      text(weight: display-weight, fill: primary, it)
     }
     outline(title: [فهرست مطالب], depth: 3, indent: 1.2em)
   }
